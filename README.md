@@ -459,7 +459,7 @@ Elektro- und Informationstechnik (Electrical and Computer Engineering)
 Hochschule Anhalt (Anhalt University of Applied Sciences)
 
 📧 **Email:** fomechepriestly7@gmail.com  
-🔗 **LInkedIn:** [Priestley Fomeche](https://linkedin.com/in/priestley-fomeche)  
+🔗 **LinkedIn:** [Priestley Fomeche](https://linkedin.com/in/priestley-fomeche)  
 💻 **GitHub:** [@charizardmigo](https://github.com/charizardmigo)
 
 ---
