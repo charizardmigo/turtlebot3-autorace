@@ -1,0 +1,202 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+################################################################################
+# Copyright 2018 ROBOTIS CO., LTD.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+################################################################################
+
+# Author: Leon Jung, Gilbert, Ashe Kim
+ 
+import rospy
+import numpy as np
+from std_msgs.msg import Float64
+from geometry_msgs.msg import Twist
+#for time track
+import time as t
+
+class ControlLane():
+    def __init__(self):
+        self.sub_lane = rospy.Subscriber('/control/lane', Float64, self.cbFollowLane, queue_size = 1)
+        self.sub_nolane = rospy.Subscriber('/detect/nolane', Float64, self.cbNoLane, queue_size = 1)
+        self.sub_max_vel = rospy.Subscriber('/control/max_vel', Float64, self.cbGetMaxVel, queue_size = 1)
+        self.pub_cmd_vel = rospy.Publisher('/control/cmd_vel', Twist, queue_size = 1)
+
+        self.lastError = 0
+        
+        #tuning parameters
+        self.MAX_VEL = 0.12 # 0.12 max allowed vel
+        # self.MAX_VEL_ANG = 0.5 # self.MAX_VEL # 0.6 max allowed angular vel
+        # self.Kp = 0.0025 #  0.0025 set PD-controller values for P 
+        # self.Kd = 0.0003 # 0.002 set PD-controller values for D
+
+        #self.MAX_VEL = 0.15 # Linear Velocity
+        self.MAX_VEL_ANG = 0.42 # Angular Velocity
+        self.Kp = 0.005 # P Constant
+        self.Ki = 0.0001 # I Constant
+        self.integral = 0 # Integral Windup declaration
+        self.integral_max = 0.05 # Limit The Maximum Value For The Integral Term To Prevent
+        self.Kd = 0.005 # D Constant
+        
+        # helpers
+        self.found_line = False
+        self.twist_linearx = 0
+        self.twist_angularz = 0
+
+        self.stat_NoLane = 0
+        self.stat_NoLaneIndex = 0
+
+        self.stop = 0
+        self.turn_left = 1
+        self.turn_right = 2
+        self.go_forward = 3
+        self.go_backward = 4
+        
+        #time
+        self.time_old = t.time()
+
+        rospy.on_shutdown(self.fnShutDown)
+
+    def fnMinMax(self, val, minn, maxn): # limit a value to a defined range
+        return max(min(maxn, val), minn)
+    
+    def cbGetMaxVel(self, max_vel_msg):
+        self.MAX_VEL = max_vel_msg.data
+        rospy.loginfo("cbGetMaxVel: %f", self.MAX_VEL)
+
+
+    def cbFollowLane(self, desired_center):
+        
+        center = desired_center.data
+        
+        # calculate PID -Controller value for angular velocity
+        error = center - 500 # calculate error
+        #new
+        self.integral += error  # update the integral term added
+        self.integral = self.fnMinMax(self.integral, -self.integral_max, self.integral_max)  # Limit The Integral Term To Prevent Windup
+        #new end
+
+        #angular_z = self.Kp * error + self.Kd * (error - self.lastError) #calculate outpu of pd controller (impacts angular velocity/ "steering")
+        #new
+        angular_z = self.Kp * error + self.Kd * (error - self.lastError) + self.Ki * self.integral  #Calculate Output Of PID Controller
+
+        self.lastError = error
+        
+        if self.found_line:
+            self.found_line = False
+            self.stat_NoLaneIndex = 0
+        
+        # set new velocity parameters for turtlebot
+        twist = Twist()
+        #twist.linear.x = 0.05 # static speed instead of variable speed in next column
+        #twist.linear.x = min(self.MAX_VEL * ((1 - (self.fnMinMax(abs(error),0,500) * 1/500)) ** 1.5), self.MAX_VEL) # Applies exponential funtion to control velocity for an error inrange 0 to 500. Max vel can be adjusted in init. 
+        twist.linear.x = min(self.MAX_VEL * ((1 - (self.fnMinMax(abs(error),0,500) * 1/500)) ** 2.0), self.MAX_VEL) # Applies exponential funtion to control velocity for an error inrange 0 to 500. Max vel can be adjusted in init. 
+        #rospy.loginfo(twist.linear.x )
+
+        twist.linear.y = 0
+        twist.linear.z = 0
+        twist.angular.x = 0
+        twist.angular.y = 0
+        twist.angular.z = -max(angular_z, -1 * self.MAX_VEL_ANG) if angular_z < 0 else -min(angular_z, self.MAX_VEL_ANG) # define boundaries for angular velocity
+        
+        #stop completely when max vel = 0 added by Shehan
+        if self.MAX_VEL == 0:
+            twist.linear.x = 0
+            twist.angular.z = 0
+        
+        self.pub_cmd_vel.publish(twist)
+        
+        #Timing Control Loop
+        #rospy.loginfo("Control Lane Time : %.2f ms", ((t.time() - self.time_old) * 1000))
+        self.time_old = t.time()
+        
+        self.twist_linearx = twist.linear.x
+        self.twist_angularz = twist.angular.z
+        
+    def cbNoLane(self, value):
+        twist = Twist()
+        twist.linear.y = 0
+        twist.linear.z = 0
+        twist.angular.x = 0
+        twist.angular.y = 0
+
+        if self.found_line == False and self.twist_angularz > 0:
+             self.stat_NoLane = self.turn_left
+        elif self.found_line == False:
+             self.stat_NoLane = self.turn_right
+
+
+        if self.stat_NoLane == self.stop:
+                #rospy.loginfo("No Lane Stop")
+                twist.linear.x = 0
+                twist.angular.z = 0
+        elif self.stat_NoLane == self.turn_left:
+                #rospy.loginfo("No Lane Left")
+                twist.linear.x = 0.03
+                twist.angular.z = 0.3
+                if self.stat_NoLaneIndex == 215 or self.stat_NoLaneIndex == 515 or self.stat_NoLaneIndex == 815 or self.stat_NoLaneIndex == 1115: 
+                     self.stat_NoLane = self.go_forward
+        elif self.stat_NoLane == self.turn_right:
+                #rospy.loginfo("No Lane Right")
+                twist.linear.x = 0.03
+                twist.angular.z = -0.3
+                if self.stat_NoLaneIndex == 215 or self.stat_NoLaneIndex == 515 or self.stat_NoLaneIndex == 815 or self.stat_NoLaneIndex == 1115: 
+                     self.stat_NoLane = self.go_forward
+        elif self.stat_NoLane == self.go_forward:
+                #rospy.loginfo("No Lane Forward")
+                twist.linear.x = 0.05
+                twist.angular.z = 0
+                if self.stat_NoLaneIndex == 300 or self.stat_NoLaneIndex == 600 or self.stat_NoLaneIndex == 900: 
+                    self.stat_NoLane = self.turn_left
+                if self.stat_NoLaneIndex == 1200:
+                    self.stat_NoLane = self.stop
+        elif self.stat_NoLane == self.go_backward:
+                #rospy.loginfo("No Lane Backward")
+                twist.linear.x = -0.05
+                twist.angular.z = 0
+        
+
+        twist.linear.x = min(twist.linear.x, self.MAX_VEL)
+        if self.MAX_VEL == 0:
+            twist.angular.z = 0
+        #rospy.loginfo(twist.linear.x )
+
+        self.stat_NoLaneIndex += 1
+        self.found_line = True
+        self.pub_cmd_vel.publish(twist)
+        
+        #Timing Control Loop
+        #srospy.loginfo("Control Lane Time : %.2f ms", ((t.time() - self.time_old) * 1000))
+        self.time_old = t.time()
+
+
+    def fnShutDown(self):
+        rospy.loginfo("Shutting down. cmd_vel will be 0")
+
+        twist = Twist()
+        twist.linear.x = 0
+        twist.linear.y = 0
+        twist.linear.z = 0
+        twist.angular.x = 0
+        twist.angular.y = 0
+        twist.angular.z = 0
+        self.pub_cmd_vel.publish(twist) 
+
+    def main(self):
+        rospy.spin()
+
+if __name__ == '__main__':
+    rospy.init_node('control_lane')
+    node = ControlLane()
+    node.main()

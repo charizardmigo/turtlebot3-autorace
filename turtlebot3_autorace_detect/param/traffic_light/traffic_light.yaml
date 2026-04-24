@@ -1,0 +1,31 @@
+---
+detect:
+  traffic_light:
+    red:
+      hue_l: 0
+      hue_h: 20
+      saturation_l: 1
+      saturation_h: 255
+      lightness_l: 140
+      lightness_h: 255
+    yellow:
+      hue_l: 25
+      hue_h: 19
+      saturation_l: 23
+      saturation_h: 255
+      lightness_l: 226
+      lightness_h: 255
+    green:
+      hue_l: 60
+      hue_h: 90
+      saturation_l: 170
+      saturation_h: 255
+      lightness_l: 120
+      lightness_h: 255
+    blop:
+      minThreshhold: 120
+      maxThreshhold: 255
+      minArea: 100
+      maxArea: 600
+      minCircularity: 0.7
+      minConvexity: 0.9

@@ -1,0 +1,614 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+################################################################################
+# Copyright 2018 ROBOTIS CO., LTD.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+################################################################################
+
+# Author: Leon Jung, Gilbert
+
+import rospy
+import numpy as np 
+import os
+import cv2
+from enum import Enum
+from std_msgs.msg import UInt8
+from sensor_msgs.msg import Image, CompressedImage
+from cv_bridge import CvBridge, CvBridgeError
+
+#import files for YOLO
+from ultralytics import YOLO
+
+#for time track
+import time as t
+
+# path of model from current working directory of the code
+model_path = os.path.dirname(os.path.realpath(__file__))
+model_path += '/yolo/best.onnx'
+
+
+#load model
+
+model = YOLO(model_path)  # load model
+
+class DetectSign():
+    def __init__(self):
+
+        self.fnPreproc()
+
+        self.sub_image_type = "raw" # you can choose image type "compressed", "raw"
+        self.pub_image_type = "compressed" # you can choose image type "compressed", "raw"
+        
+
+
+        if self.sub_image_type == "compressed":
+            # subscribes compressed image
+            self.sub_image_original = rospy.Subscriber('/detect/image_input/compressed', CompressedImage, self.cbFindTrafficSign, queue_size = 1)
+        elif self.sub_image_type == "raw":
+        # subscribes raw image
+            
+            self.sub_image_original = rospy.Subscriber('/detect/image_input', Image, self.cbFindTrafficSign, queue_size = 1)
+            
+        # publishes
+        self.pub_traffic_sign = rospy.Publisher('/detect/traffic_sign', UInt8, queue_size=1)
+
+        if self.pub_image_type == "compressed":
+            # publishes traffic sign image in compressed type 
+            self.pub_image_traffic_sign = rospy.Publisher('/detect/image_output/compressed', CompressedImage, queue_size = 1)
+        elif self.pub_image_type == "raw":
+            # publishes traffic sign image in raw type
+            self.pub_image_traffic_sign = rospy.Publisher('/detect/image_output', Image, queue_size = 1)
+
+        self.cvBridge = CvBridge()
+        self.TrafficSign = Enum('TrafficSign', 'intersection left right construction stop parking tunnel speedlimit_50 speedlimit_100 traffic_light')
+        self.counter = 0
+        self.currentframe = 0
+    
+    def fnPreproc(self):
+        #start_time = t.time() 
+        # Initiate SIFT
+        self.sift = self.sift = cv2.SIFT_create() 
+
+        dir_path = os.path.dirname(os.path.realpath(__file__))
+        dir_path = dir_path.replace('turtlebot3_autorace_detect/nodes', 'turtlebot3_autorace_detect/')
+        dir_path += 'image/'
+
+        self.img0 = cv2.imread(dir_path + 'tunnel.png',0)       # trainImage1
+        self.img1 = cv2.imread(dir_path + 'speedlimit_50.png',0)   # trainImage2
+        self.img2 = cv2.imread(dir_path + 'speedlimit_100.png',0)    # trainImage3
+        self.img3 = cv2.imread(dir_path + 'intersection.png',0) # trainImage4
+        self.img4 = cv2.imread(dir_path + 'parking.png',0)   # trainImage5
+        self.img5 = cv2.imread(dir_path + 'right.png',0) 	  # trainImage6
+        self.img6 = cv2.imread(dir_path + 'left.png',0) # trainImage7
+        self.img7 = cv2.imread(dir_path + 'construction.png',0)# trainImage8
+        self.img8 = cv2.imread(dir_path + 'stop.png',0) # trainImage9
+        self.img9 = cv2.imread(dir_path + 'traffic_light.png',0) # trainImage10
+
+        self.kp5, self.des5 = self.sift.detectAndCompute(self.img5,None) #Keypoints for right
+        self.kp6, self.des6 = self.sift.detectAndCompute(self.img6,None) # Keypoints for left
+
+        FLANN_INDEX_KDTREE = 0
+        index_params = dict(algorithm = FLANN_INDEX_KDTREE, trees = 5)
+        search_params = dict(checks = 50)
+
+
+        self.flann = cv2.FlannBasedMatcher(index_params, search_params)
+        #print(round(t.time()- self.start_time,2) * 1000)
+    
+    def fnCalcMSE(self, arr1, arr2):
+            squared_diff = (arr1 - arr2) ** 2
+            sum = np.sum(squared_diff)
+            num_all = arr1.shape[0] * arr1.shape[1] #cv_image_input and 2 should have same shape
+            err = sum / num_all
+            return err
+
+    def cbFindTrafficSign(self, image_msg):
+        
+        # drop the frame to 1/15 because of the processing speed. This is up to your computer's operating power.
+        if self.counter % 15 != 0:
+            self.counter += 1
+            return
+        else:
+            self.counter = 1
+
+        if self.sub_image_type == "compressed":
+            #converting compressed image to opencv image
+            np_arr = np.fromstring(image_msg.data, np.uint8)
+            cv_image_input = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        elif self.sub_image_type == "raw":
+            cv_image_input = self.cvBridge.imgmsg_to_cv2(image_msg, "bgr8")
+
+        start_time = t.time() # Start Time for calculating computational time
+
+        #x,y,w,h = 20,60,280,100 # Coordinates to limit frame
+        MIN_MATCH_COUNT = 7  # or equal to 5
+        MIN_MSE_DECISION = 50000
+
+        #kp1, des1 = self.sift.detectAndCompute(cv_image_input,None)
+        #cv2.rectangle(cv_image_input, (x,y), (x+w,y+h), (255,165,0),2) # Showing Rectangle frame formed
+
+        #matches5 = self.flann.knnMatch(des1,self.des5,k=2) # matching input image with right
+        #matches6 = self.flann.knnMatch(des1,self.des6,k=2) # matching input image with left
+
+        detected_image = 10
+    
+        #doing YOLO Detection
+
+        results = model.predict(cv_image_input, conf = 0.80,imgsz=320, verbose=False)
+        #results = model.predict(cv_image_input[y:y+h, x:x+w]) # If you want to do detection through limited frame
+        result = results[0]
+
+        # for r in results:
+        #     print(r.boxes.cls)
+        #     print(r.boxes.conf)
+
+        # self.currentframe += 1
+        # name = '/home/patrick/Test/right' + str(self.currentframe) + '.jpg'
+        # print ('Creating...' + name)
+        # cv2.imwrite(name, cv_image_input)
+
+        #check whether anything is detected or not
+        if len(result) == 0:
+            if self.pub_image_type == "compressed":
+                # publishes traffic sign image in compressed type
+                self.pub_image_traffic_sign.publish(self.cvBridge.cv2_to_compressed_imgmsg(cv_image_input, "jpg"))
+
+            elif self.pub_image_type == "raw":
+                # publishes traffic sign image in raw type
+                self.pub_image_traffic_sign.publish(self.cvBridge.cv2_to_imgmsg(cv_image_input, "bgr8"))
+
+            end_time = round(t.time()- start_time,2) * 1000 # Final Computational time in ms
+            print(f"Yolo inference time in msec: {end_time:.1f}")
+            
+        elif len(result) !=0:
+
+            # collecting data
+            box = result.boxes[0]
+            cords = box.xyxy[0].tolist()
+            sign_ID = box.cls[0].item()
+            confidence = box.conf[0].item()
+            xmin,ymin,xmax,ymax = int(cords[0]), int(cords[1]), int(cords[2]), int(cords[3]) 
+
+            if sign_ID == 0 and confidence > 0.80:
+                #tunnel
+                
+                msg_sign = UInt8()
+                msg_sign.data = self.TrafficSign.tunnel.value
+
+                self.pub_traffic_sign.publish(msg_sign)
+
+                rospy.loginfo("Traffic Sign Detected: Tunnel (Yolo)")
+
+                detected_image = 0
+
+            elif sign_ID == 1 and confidence > 0.60:
+                #speedlimit_50
+
+                msg_sign = UInt8()
+                msg_sign.data = self.TrafficSign.speedlimit_50.value
+
+                self.pub_traffic_sign.publish(msg_sign)
+
+                rospy.loginfo("Traffic Sign Detected: Speed Limit 50 (Yolo)")
+
+                detected_image = 1
+
+            elif sign_ID == 2 and confidence > 0.80:
+                #speedlimit_100
+
+                msg_sign = UInt8()
+                msg_sign.data = self.TrafficSign.speedlimit_100.value
+
+                self.pub_traffic_sign.publish(msg_sign)
+
+                rospy.loginfo("Traffic Sign Detected: Speed Limit 100 (Yolo)")
+
+                detected_image = 2
+
+            elif sign_ID == 3 and confidence > 0.80:
+            #elif sign_ID == 3 and confidence > 0.85:
+                #intersection
+
+                msg_sign = UInt8()
+                msg_sign.data = self.TrafficSign.intersection.value
+
+                self.pub_traffic_sign.publish(msg_sign)
+
+                rospy.loginfo("Traffic Sign Detected: Intersection (Yolo)")
+
+                detected_image = 3
+
+            elif sign_ID == 4 and confidence > 0.80:
+                #parking
+
+                msg_sign = UInt8()
+                msg_sign.data = self.TrafficSign.parking.value
+                
+                self.pub_traffic_sign.publish(msg_sign)
+
+                rospy.loginfo("Traffic Sign Detected: Parking (Yolo)")
+
+                detected_image = 4
+
+            elif sign_ID == 5 and confidence > 0.60:
+                #right ##### CODE FOR YOLO usage #######
+
+                msg_sign = UInt8()
+                msg_sign.data = self.TrafficSign.right.value
+                
+                self.pub_traffic_sign.publish(msg_sign)
+
+                rospy.loginfo("Traffic Sign Detected: Right (Yolo)")
+
+                detected_image = 5
+
+            elif sign_ID == 6 and confidence > 0.60:
+                #left ##### CODE FOR YOLO usage #######
+
+                msg_sign = UInt8()
+                msg_sign.data = self.TrafficSign.left.value
+                
+                self.pub_traffic_sign.publish(msg_sign)
+
+                rospy.loginfo("Traffic Sign Detected: Left (Yolo)")
+
+                detected_image = 6
+            
+            ##### CODE FOR SIFT approach 1 #######    
+            # elif sign_ID == 5 and confidence > 0.50:
+            #     #right
+            #     #checking with SIFT for right
+
+            #     kp1, des1 = self.sift.detectAndCompute(cv_image_input,None)
+            #     matches5 = self.flann.knnMatch(des1,self.des5,k=2) # matching input image with right
+
+            #     good5 = []
+            #     for m,n in matches5:
+            #         if m.distance < 0.7*n.distance:
+            #             good5.append(m)
+
+            #     if len(good5)>MIN_MATCH_COUNT:
+            #         src_pts = np.float32([ kp1[m.queryIdx].pt for m in good5 ]).reshape(-1,1,2)
+            #         dst_pts = np.float32([ self.kp5[m.trainIdx].pt for m in good5 ]).reshape(-1,1,2)
+
+            #         mse = self.fnCalcMSE(src_pts, dst_pts)
+            #         if mse < MIN_MSE_DECISION:
+
+            #             msg_sign = UInt8()
+            #             msg_sign.data = self.TrafficSign.right.value
+                        
+            #             self.pub_traffic_sign.publish(msg_sign)
+
+            #             rospy.loginfo("Traffic Sign Detected: Right (Yolo+SIFTv1)")
+
+            #             detected_image = 5
+
+            # elif sign_ID == 6 and confidence > 0.70:
+            #     #left 
+            #     #checking with SIFT algorithm left
+
+            #     kp1, des1 = self.sift.detectAndCompute(cv_image_input,None)
+            #     matches6 = self.flann.knnMatch(des1,self.des6,k=2) # matching input image with left
+
+            #     good6 = []
+            #     for m,n in matches6:
+            #         if m.distance < 0.7*n.distance:
+            #             good6.append(m)
+
+            #     if len(good6)>MIN_MATCH_COUNT:
+            #         src_pts = np.float32([ kp1[m.queryIdx].pt for m in good6 ]).reshape(-1,1,2)
+            #         dst_pts = np.float32([ self.kp6[m.trainIdx].pt for m in good6 ]).reshape(-1,1,2)
+
+            #         mse = self.fnCalcMSE(src_pts, dst_pts)
+            #         if mse < MIN_MSE_DECISION:
+        
+            #             msg_sign = UInt8()
+            #             msg_sign.data = self.TrafficSign.left.value
+                        
+            #             self.pub_traffic_sign.publish(msg_sign)
+
+            #             rospy.loginfo("Traffic Sign Detected: Left(Yolo+SIFTv1)")
+
+            #             detected_image = 6 
+
+            ##### CODE FOR SIFT approach 2 #######
+            # elif (sign_ID == 5 and confidence > 0.60) or (sign_ID == 6 and confidence > 0.60):
+            #     #right or left
+            #     #checking with SIFT for right or left
+
+            #     rospy.loginfo("Traffic Sign Detected: Left or Right check with SIFT")
+            #     rospy.loginfo("Sign ID: %d",sign_ID)
+            #     rospy.loginfo("confidence: %f",confidence)
+
+            #     mse5 = 100000
+            #     mse6 = 100000
+
+            #     #(xmin,ymin) , (xmax,ymax)
+            #     if ymin >= 10:
+            #         yminsiff = ymin-10
+            #     else: 
+            #         yminsiff = ymin
+
+            #     if ymax <= 230:
+            #         ymaxsiff = ymax+10
+            #     else:   
+            #         ymaxsiff = ymax
+
+            #     if xmin >= 10:
+            #         xminsiff = xmin-10
+            #     else:
+            #         xminsiff = xmin
+
+            #     if xmax <= 310:
+            #         xmaxsiff = xmax+10
+            #     else:
+            #         xmaxsiff = xmax
+
+            #     cv_image_input_siff = cv2.cvtColor(cv_image_input, cv2.COLOR_BGR2GRAY)
+            #     th, cv_image_input_siff = cv2.threshold(cv_image_input_siff, 127, 255, cv2.THRESH_BINARY); 
+            #     cv_image_input_siff = cv2.blur(src=cv_image_input_siff, ksize=(2,2))
+
+            #     kp1, des1 = self.sift.detectAndCompute(cv_image_input_siff[yminsiff:ymaxsiff,xminsiff:xmaxsiff],None)
+
+            #     matches5 = self.flann.knnMatch(des1,self.des5,k=2) # matching input image with right
+            #     matches6 = self.flann.knnMatch(des1,self.des6,k=2) # matching input image with left
+
+            #     good5 = []
+            #     for m,n in matches5:
+            #         if m.distance < 0.7*n.distance:
+            #             good5.append(m)
+
+            #     good6 = []
+            #     for m,n in matches6:
+            #         if m.distance < 0.7*n.distance:
+            #             good6.append(m)
+
+            #     if len(good5)>MIN_MATCH_COUNT:
+            #         src_pts = np.float32([ kp1[m.queryIdx].pt for m in good5 ]).reshape(-1,1,2)
+            #         dst_pts = np.float32([ self.kp5[m.trainIdx].pt for m in good5 ]).reshape(-1,1,2)
+
+            #         mse5 = self.fnCalcMSE(src_pts, dst_pts)
+
+            #     if len(good6)>MIN_MATCH_COUNT:
+            #         src_pts = np.float32([ kp1[m.queryIdx].pt for m in good6 ]).reshape(-1,1,2)
+            #         dst_pts = np.float32([ self.kp6[m.trainIdx].pt for m in good6 ]).reshape(-1,1,2)
+
+            #         mse6 = self.fnCalcMSE(src_pts, dst_pts)
+
+            #     rospy.loginfo("mse5: %d rechts",mse5)
+            #     rospy.loginfo("mse6: %d links",mse6)
+
+            #     if confidence >= 0.9:
+            #         if sign_ID == 5:
+            #             mse5 = 49999
+
+            #         elif sign_ID == 6:
+            #             mse6 = 49999
+
+            #     if (mse5 < MIN_MSE_DECISION)  or (mse6 < MIN_MSE_DECISION):
+            #         if mse5 < mse6:
+            #             if sign_ID == 5:
+            #                 detected_image = 5
+            #                 msg_sign = UInt8()
+            #                 msg_sign.data = self.TrafficSign.right.value
+            #                 self.pub_traffic_sign.publish(msg_sign)
+            #                 rospy.loginfo("Traffic Sign Detected: Right(Yolo+SIFTv2)")
+
+            #         elif mse6 < mse5:e
+            #             if sign_ID == 6:
+            #                 detected_image = 6
+            #                 msg_sign = UInt8()
+            #                 msg_sign.data = self.TrafficSign.left.value
+            #                 self.pub_traffic_sign.publish(msg_sign)
+            #                 rospy.loginfo("Traffic Sign Detected: Left(Yolo+SIFTv2)") 
+
+            elif sign_ID == 7 and confidence > 0.60:
+                #construction
+
+                msg_sign = UInt8()
+                msg_sign.data = self.TrafficSign.construction.value
+                
+                self.pub_traffic_sign.publish(msg_sign)
+
+                rospy.loginfo("Traffic Sign Detected: Construction (Yolo)")
+
+                detected_image = 7
+            
+            elif sign_ID == 8 and confidence > 0.80:
+                #stop
+
+                msg_sign = UInt8()
+                msg_sign.data = self.TrafficSign.stop.value
+                
+                self.pub_traffic_sign.publish(msg_sign)
+
+                rospy.loginfo("Traffic Sign Detected: Stop (Yolo)")
+
+                detected_image = 8  
+            
+            if sign_ID == 9 and confidence > 0.80:
+                #traffic light
+                
+                msg_sign = UInt8()
+                msg_sign.data = self.TrafficSign.traffic_light.value
+                
+                self.pub_traffic_sign.publish(msg_sign)
+
+                rospy.loginfo("Traffic Sign Detected: Traffic Light (Yolo)")
+
+                detected_image = 9
+        
+
+        if detected_image == 10:
+            if self.pub_image_type == "compressed":
+                # publishes traffic sign image in compressed type
+                self.pub_image_traffic_sign.publish(self.cvBridge.cv2_to_compressed_imgmsg(cv_image_input, "jpg"))
+
+            elif self.pub_image_type == "raw":
+                # publishes traffic sign image in raw type
+                self.pub_image_traffic_sign.publish(self.cvBridge.cv2_to_imgmsg(cv_image_input, "bgr8"))
+
+        
+        elif detected_image == 0:
+
+            self.output_Img = cv2.rectangle(cv_image_input, (xmin,ymin) , (xmax,ymax), color = (0,255,0), thickness= 2)
+            final0 = cv2.drawMatches(cv_image_input,None,self.img0,None,None,outImg=self.output_Img)
+
+            if self.pub_image_type == "compressed":
+                # publishes traffic sign image in compressed type
+                self.pub_image_traffic_sign.publish(self.cvBridge.cv2_to_compressed_imgmsg(final0, "jpg"))
+
+            elif self.pub_image_type == "raw":
+            # publishes traffic sign image in raw type
+                self.pub_image_traffic_sign.publish(self.cvBridge.cv2_to_imgmsg(final0, "bgr8"))
+
+           
+        elif detected_image == 1:
+
+            self.output_Img = cv2.rectangle(cv_image_input, (xmin,ymin) , (xmax,ymax), color = (255,0,0), thickness= 2)
+            final1 = cv2.drawMatches(cv_image_input,None,self.img1,None,None,outImg=self.output_Img)
+            
+            if self.pub_image_type == "compressed":
+                # publishes traffic sign image in compressed type
+                self.pub_image_traffic_sign.publish(self.cvBridge.cv2_to_compressed_imgmsg(final1, "jpg"))
+
+            elif self.pub_image_type == "raw":
+            # publishes traffic sign image in raw type
+                self.pub_image_traffic_sign.publish(self.cvBridge.cv2_to_imgmsg(final1, "bgr8"))
+
+
+        elif detected_image == 2:
+
+            self.output_Img = cv2.rectangle(cv_image_input, (xmin,ymin) , (xmax,ymax), color = (255,0,0), thickness= 2)
+            final2 = cv2.drawMatches(cv_image_input,None,self.img2,None,None,outImg=self.output_Img)
+
+            if self.pub_image_type == "compressed":
+                # publishes traffic sign image in compressed type
+                self.pub_image_traffic_sign.publish(self.cvBridge.cv2_to_compressed_imgmsg(final2, "jpg"))
+
+            elif self.pub_image_type == "raw":
+            # publishes traffic sign image in raw type
+                self.pub_image_traffic_sign.publish(self.cvBridge.cv2_to_imgmsg(final2, "bgr8"))
+
+            
+        elif detected_image == 3:
+
+            self.output_Img = cv2.rectangle(cv_image_input, (xmin,ymin) , (xmax,ymax), color = (0,255,0), thickness= 2)
+            final3 = cv2.drawMatches(cv_image_input,None,self.img3,None,None,outImg=self.output_Img)
+
+            if self.pub_image_type == "compressed":
+                # publishes traffic sign image in compressed type
+                self.pub_image_traffic_sign.publish(self.cvBridge.cv2_to_compressed_imgmsg(final3, "jpg"))
+
+            elif self.pub_image_type == "raw":
+            # publishes traffic sign image in raw type
+                self.pub_image_traffic_sign.publish(self.cvBridge.cv2_to_imgmsg(final3, "bgr8"))
+
+           
+        elif detected_image == 4:
+
+            self.output_Img = cv2.rectangle(cv_image_input, (xmin,ymin) , (xmax,ymax), color = (0,255,0), thickness= 2)
+            final4 = cv2.drawMatches(cv_image_input,None,self.img4,None,None,outImg=self.output_Img)
+
+            if self.pub_image_type == "compressed":
+                # publishes traffic sign image in compressed type
+                self.pub_image_traffic_sign.publish(self.cvBridge.cv2_to_compressed_imgmsg(final4, "jpg"))
+
+            elif self.pub_image_type == "raw":
+            # publishes traffic sign image in raw type
+                self.pub_image_traffic_sign.publish(self.cvBridge.cv2_to_imgmsg(final4, "bgr8"))
+
+
+        elif detected_image == 5:
+
+            self.output_Img = cv2.rectangle(cv_image_input, (xmin,ymin) , (xmax,ymax), color = (0,255,0), thickness= 2)
+            final5 = cv2.drawMatches(cv_image_input,None,self.img5,None,None,outImg=self.output_Img)
+
+            if self.pub_image_type == "compressed":
+                # publishes traffic sign image in compressed type
+                self.pub_image_traffic_sign.publish(self.cvBridge.cv2_to_compressed_imgmsg(final5, "jpg"))
+
+            elif self.pub_image_type == "raw":
+            # publishes traffic sign image in raw type
+                self.pub_image_traffic_sign.publish(self.cvBridge.cv2_to_imgmsg(final5, "bgr8"))
+
+
+        elif detected_image == 6:
+
+            self.output_Img = cv2.rectangle(cv_image_input, (xmin,ymin) , (xmax,ymax), color = (0,255,0), thickness= 2)
+            final6 = cv2.drawMatches(cv_image_input,None,self.img6,None,None,outImg=self.output_Img)
+
+            if self.pub_image_type == "compressed":
+                # publishes traffic sign image in compressed type
+                self.pub_image_traffic_sign.publish(self.cvBridge.cv2_to_compressed_imgmsg(final6, "jpg"))
+
+            elif self.pub_image_type == "raw":
+            # publishes traffic sign image in raw type
+                self.pub_image_traffic_sign.publish(self.cvBridge.cv2_to_imgmsg(final6, "bgr8"))
+
+         
+        elif detected_image == 7:
+
+            self.output_Img = cv2.rectangle(cv_image_input, (xmin,ymin) , (xmax,ymax), color = (0,255,0), thickness= 2)
+            final7 = cv2.drawMatches(cv_image_input,None,self.img7,None,None,outImg=self.output_Img)
+
+            if self.pub_image_type == "compressed":
+                # publishes traffic sign image in compressed type
+                self.pub_image_traffic_sign.publish(self.cvBridge.cv2_to_compressed_imgmsg(final7, "jpg"))
+
+            elif self.pub_image_type == "raw":
+            # publishes traffic sign image in raw type
+                self.pub_image_traffic_sign.publish(self.cvBridge.cv2_to_imgmsg(final7, "bgr8"))
+
+          
+        elif detected_image == 8:
+
+            self.output_Img = cv2.rectangle(cv_image_input, (xmin,ymin) , (xmax,ymax), color = (0,0,255), thickness= 2)
+            final8 = cv2.drawMatches(cv_image_input,None,self.img8,None,None,outImg=self.output_Img)
+
+            if self.pub_image_type == "compressed":
+                # publishes traffic sign image in compressed type
+                self.pub_image_traffic_sign.publish(self.cvBridge.cv2_to_compressed_imgmsg(final8, "jpg"))
+
+            elif self.pub_image_type == "raw":
+            # publishes traffic sign image in raw type
+                self.pub_image_traffic_sign.publish(self.cvBridge.cv2_to_imgmsg(final8, "bgr8"))
+
+        
+        elif detected_image == 9:
+
+            self.output_Img = cv2.rectangle(cv_image_input, (xmin,ymin) , (xmax,ymax), color = (0,255,0), thickness= 2)
+            final9 = cv2.drawMatches(cv_image_input,None,self.img9,None,None,outImg=self.output_Img)
+
+            if self.pub_image_type == "compressed":
+                # publishes traffic sign image in compressed type
+                self.pub_image_traffic_sign.publish(self.cvBridge.cv2_to_compressed_imgmsg(final9, "jpg"))
+
+            elif self.pub_image_type == "raw":
+            # publishes traffic sign image in raw type
+                self.pub_image_traffic_sign.publish(self.cvBridge.cv2_to_imgmsg(final9, "bgr8"))
+
+        end_time = round(t.time()- start_time,2) * 1000 # Final Computational time in ms
+        print(f"Yolo inference time in msec: {end_time:.1f}")
+
+    
+    def main(self):
+        rospy.spin()
+
+if __name__ == '__main__':
+    rospy.init_node('detect_sign')
+    node = DetectSign()
+    node.main()
+    

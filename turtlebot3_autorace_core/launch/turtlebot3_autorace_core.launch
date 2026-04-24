@@ -1,0 +1,12 @@
+<launch>
+  <!-- launch turtlebot3_autorace_camera_pi.launch in the raspberry pi before launch this file -->
+  <!-- launch turtlebot3_bringup pkg - turtlebot3_robot.launch in the raspberry pi before launch this file -->
+
+  <!-- Load navigation parameters -->
+  <rosparam file="$(find turtlebot3_autorace_core)/../param/costmap_common_params_burger.yaml" command="load"/>
+  <rosparam file="$(find turtlebot3_autorace_core)/../param/dwa_local_planner_params_burger.yaml" command="load"/>
+
+  <!-- image brightness & contrast compensation of ground-projected image -->
+  <node pkg="turtlebot3_autorace_core" type="core_node_controller" name="core_node_controller" output="screen" />
+  <node pkg="turtlebot3_autorace_core" type="core_mode_decider" name="core_mode_decider" output="screen" />
+</launch>

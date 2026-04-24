@@ -1,0 +1,24 @@
+# Large training/documentation files
+turtlebot3_autorace_detect/nodes/yolo_documentation/
+
+# Old/backup files
+turtlebot3_autorace_core/nodes/core_mode_decider_old
+turtlebot3_autorace_detect/nodes/detect_traffic_light_old
+turtlebot3_autorace_driving/nodes/control_lane.old
+turtlebot3_autorace_driving/maps/tunnel.pgmold
+turtlebot3_autorace_driving/maps/tunnel.pgmxyz
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# ROS build artifacts
+build/
+devel/
+install/
+.catkin_workspace
+
+# OS files
+.DS_Store
+Thumbs.db
